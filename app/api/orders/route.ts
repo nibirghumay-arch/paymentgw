@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDb } from "@/lib/db";
+import { one, run } from "@/lib/db";
 import { authenticateMerchant, newId } from "@/lib/auth";
 
 // ============================================================
@@ -14,11 +14,14 @@ import { authenticateMerchant, newId } from "@/lib/auth";
 //     "amountBdt": 500,
 //     "provider": "BKASH",          // which provider customer will pay with
 //     "returnUrl": "https://yoursite.com/thank-you",
-//     "metadata": { "orderId": "1234" }
+//     "metadata": { "depositId": "1234" }
 //   }
 //
 // Response: { reference, checkoutUrl, receivingNumber, amountBdt, expiresAt }
 // ============================================================
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const createOrderSchema = z.object({
   amountBdt: z.number().positive().max(500000),
@@ -50,15 +53,17 @@ export async function POST(req: NextRequest) {
   }
 
   const { amountBdt, provider, returnUrl, metadata, expiresInMinutes } = parsed.data;
-  const db = getDb();
 
-  // Pick an active receiving account for this provider (round-robin by least-recently-used
-  // could be added later; for now, first active one — typically you'll only have one per provider).
-  const account = db
-    .prepare(
-      `SELECT * FROM receiving_accounts WHERE provider = ? AND is_active = 1 ORDER BY created_at ASC LIMIT 1`
-    )
-    .get(provider) as any;
+  // Pick the least-recently-used active receiving account for this provider so
+  // concurrent orders spread across numbers instead of all landing on one.
+  const account = await one<{ id: string; msisdn: string }>(
+    `SELECT id, msisdn
+       FROM receiving_accounts
+      WHERE provider = $1::provider_kind AND is_active = TRUE
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [provider]
+  );
 
   if (!account) {
     return NextResponse.json(
@@ -69,26 +74,27 @@ export async function POST(req: NextRequest) {
 
   const id = newId();
   const reference = newId();
-  const expiresAt = new Date(Date.now() + expiresInMinutes * 60_000).toISOString();
+  const expiresAt = new Date(Date.now() + expiresInMinutes * 60_000);
 
-  db.prepare(
+  await run(
     `INSERT INTO orders
-      (id, reference, merchant_id, amount_bdt, provider, receiving_account_id,
-       metadata, return_url, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    reference,
-    merchant.id,
-    amountBdt,
-    provider,
-    account.id,
-    metadata ? JSON.stringify(metadata) : null,
-    returnUrl ?? null,
-    expiresAt
+       (id, reference, merchant_id, amount_bdt, provider, receiving_account_id,
+        metadata, return_url, expires_at)
+     VALUES ($1, $2, $3, $4, $5::provider_kind, $6, $7::jsonb, $8, $9)`,
+    [
+      id,
+      reference,
+      merchant.id,
+      amountBdt,
+      provider,
+      account.id,
+      metadata ? JSON.stringify(metadata) : null,
+      returnUrl ?? null,
+      expiresAt.toISOString(),
+    ]
   );
 
-  const origin = req.nextUrl.origin;
+  const origin = process.env.PUBLIC_BASE_URL || req.nextUrl.origin;
 
   return NextResponse.json(
     {
@@ -98,7 +104,7 @@ export async function POST(req: NextRequest) {
       provider,
       receivingNumber: account.msisdn,
       checkoutUrl: `${origin}/checkout/pay/${reference}`,
-      expiresAt,
+      expiresAt: expiresAt.toISOString(),
     },
     { status: 201 }
   );

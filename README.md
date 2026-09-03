@@ -45,22 +45,28 @@ app/
   admin/                       admin login + dashboard UI
   checkout/pay/[reference]     public customer checkout page
 lib/
-  db.ts                        SQLite connection
+  db.ts                        Postgres connection pool (pg)
   sms-parser.ts                regex parsers per provider
   matching.ts                  the auto-verification engine
   auth.ts                      admin JWT + merchant API key auth
-db/schema.sql                  full database schema
+db/schema.sql                  full database schema (PostgreSQL)
+scripts/migrate.ts             CLI to apply db/schema.sql
 scripts/create-admin.ts        CLI to create/update the admin account
+netlify/functions/             scheduled function: expire orders, retry webhooks
 ```
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env   # then edit JWT_SECRET to a long random string
-npm run admin:create you@example.com "a-strong-password" "Your Name"
+cp .env.example .env   # then set DATABASE_URL, JWT_SECRET, CRON_SECRET
+npm run db:migrate     # applies db/schema.sql (idempotent, safe to re-run)
+npm run admin:create -- you@example.com "a-strong-password" "Your Name"
 npm run dev
 ```
+
+Needs a PostgreSQL database — see [DEPLOYMENT.md](DEPLOYMENT.md) for the Netlify
+setup and for why a local SQLite file is no longer an option.
 
 Visit `http://localhost:3000/admin/login` and sign in.
 
@@ -159,13 +165,15 @@ Practical mitigations, in order of effort:
 
 ## Production notes
 
-- Swap SQLite for a hosted Postgres if you expect concurrent write load
-  beyond what a single SQLite file handles well (better-sqlite3 is fine
-  for low-to-moderate transaction volume).
+- Runs on PostgreSQL (`pg`), so it deploys to any serverless host — see
+  [DEPLOYMENT.md](DEPLOYMENT.md). Point `DATABASE_URL` at a **pooled**
+  connection string and leave `DATABASE_POOL_MAX=1`: each warm function
+  container needs one connection, and there can be many containers.
 - Put this behind HTTPS — the SMS webhook and checkout page both handle
   sensitive data.
 - Rotate `JWT_SECRET` and merchant `apiSecret`s if ever leaked.
 - Add rate limiting to `/api/orders/[reference]/submit-trx` (public,
   unauthenticated) to prevent TrxID brute-forcing.
-- Run `expireStaleOrders()` from `lib/matching.ts` on a schedule (cron or
-  a serverless scheduled function) to auto-expire abandoned orders.
+- Run `expireStaleOrders()` from `lib/matching.ts` on a schedule — already
+  wired: `netlify/functions/expire-orders.mts` calls `/api/cron/expire`
+  every 5 minutes, which also retries failed merchant webhooks.

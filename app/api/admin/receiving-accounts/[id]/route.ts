@@ -1,13 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDb } from "@/lib/db";
+import { one, run } from "@/lib/db";
 import { requireAdmin } from "@/lib/require-admin";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const patchSchema = z.object({
   isActive: z.boolean().optional(),
   label: z.string().max(100).optional(),
   msisdn: z.string().regex(/^01[3-9]\d{8}$/).optional(),
 });
+
+const SELECT_ACCOUNT = `
+  SELECT id, provider::text AS provider, msisdn, label, device_key,
+         is_active, created_at, updated_at
+    FROM receiving_accounts WHERE id = $1`;
 
 export async function PATCH(
   req: NextRequest,
@@ -28,19 +36,21 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const db = getDb();
-  const existing = db.prepare(`SELECT * FROM receiving_accounts WHERE id = ?`).get(id) as any;
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // COALESCE lets Postgres do the "only change what was sent" merge, so a
+  // concurrent update to another field isn't silently reverted.
+  const updated = await run(
+    `UPDATE receiving_accounts
+        SET is_active = COALESCE($2, is_active),
+            label     = COALESCE($3, label),
+            msisdn    = COALESCE($4, msisdn),
+            updated_at = now()
+      WHERE id = $1`,
+    [id, parsed.data.isActive ?? null, parsed.data.label ?? null, parsed.data.msisdn ?? null]
+  );
 
-  const isActive = parsed.data.isActive ?? existing.is_active === 1;
-  const label = parsed.data.label ?? existing.label;
-  const msisdn = parsed.data.msisdn ?? existing.msisdn;
+  if (updated === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  db.prepare(
-    `UPDATE receiving_accounts SET is_active = ?, label = ?, msisdn = ?, updated_at = datetime('now') WHERE id = ?`
-  ).run(isActive ? 1 : 0, label, msisdn, id);
-
-  const account = db.prepare(`SELECT * FROM receiving_accounts WHERE id = ?`).get(id);
+  const account = await one(SELECT_ACCOUNT, [id]);
   return NextResponse.json({ account });
 }
 
@@ -51,17 +61,22 @@ export async function DELETE(
   if (!requireAdmin(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
 
-  const db = getDb();
-  const inUse = db
-    .prepare(`SELECT COUNT(*) as c FROM orders WHERE receiving_account_id = ?`)
-    .get(id) as any;
+  const inUse = await one<{ c: number }>(
+    `SELECT COUNT(*)::int AS c FROM orders WHERE receiving_account_id = $1`,
+    [id]
+  );
 
-  if (inUse.c > 0) {
+  if ((inUse?.c ?? 0) > 0) {
     // Never hard-delete an account with order history — deactivate instead.
-    db.prepare(`UPDATE receiving_accounts SET is_active = 0, updated_at = datetime('now') WHERE id = ?`).run(id);
+    await run(
+      `UPDATE receiving_accounts SET is_active = FALSE, updated_at = now() WHERE id = $1`,
+      [id]
+    );
     return NextResponse.json({ ok: true, deactivated: true });
   }
 
-  db.prepare(`DELETE FROM receiving_accounts WHERE id = ?`).run(id);
+  const deleted = await run(`DELETE FROM receiving_accounts WHERE id = $1`, [id]);
+  if (deleted === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   return NextResponse.json({ ok: true, deleted: true });
 }

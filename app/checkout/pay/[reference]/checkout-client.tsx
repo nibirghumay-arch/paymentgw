@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { PROVIDER_INFO } from "@/lib/providers";
 
-type OrderStatus = "PENDING" | "SUBMITTED" | "MATCHED" | "APPROVED" | "REJECTED" | "EXPIRED";
+export type OrderStatus = "PENDING" | "SUBMITTED" | "MATCHED" | "APPROVED" | "REJECTED" | "EXPIRED";
 
 interface Props {
   reference: string;

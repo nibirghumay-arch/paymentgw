@@ -8,7 +8,7 @@ interface Merchant {
   name: string;
   api_key: string;
   webhook_url: string | null;
-  is_active: number;
+  is_active: boolean;
   created_at: string;
 }
 

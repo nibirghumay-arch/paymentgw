@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDb } from "@/lib/db";
+import { one, run } from "@/lib/db";
 import { parseSms } from "@/lib/sms-parser";
 import { tryMatchSmsToOrder } from "@/lib/matching";
 import { newId } from "@/lib/auth";
@@ -14,13 +14,16 @@ import { newId } from "@/lib/auth";
 // SMS arrives on that device.
 //
 // Auth: the device_key issued when the admin creates a Receiving
-// Account is sent as a header, so we know unambiguously which
+// Account is sent in the body, so we know unambiguously which
 // bKash/Nagad number this SMS belongs to (don't rely on parsing
 // the number out of the SMS itself — it's not always present).
 //
 // Body:
 //   { "deviceKey": "...", "text": "You have received Tk 500.00 from ...", "sentAt": "2026-09-03T10:00:00Z" }
 // ============================================================
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const ingestSchema = z.object({
   deviceKey: z.string().min(1),
@@ -45,11 +48,13 @@ export async function POST(req: NextRequest) {
   }
 
   const { deviceKey, text, sentAt } = parsed.data;
-  const db = getDb();
 
-  const account = db
-    .prepare(`SELECT * FROM receiving_accounts WHERE device_key = ? AND is_active = 1`)
-    .get(deviceKey) as any;
+  const account = await one<{ id: string; provider: "BKASH" | "NAGAD" | "ROCKET" | "UPAY" }>(
+    `SELECT id, provider::text AS provider
+       FROM receiving_accounts
+      WHERE device_key = $1 AND is_active = TRUE`,
+    [deviceKey]
+  );
 
   if (!account) {
     // Deliberately vague — don't reveal whether the key exists at all
@@ -65,26 +70,34 @@ export async function POST(req: NextRequest) {
       ? "PARSED"
       : "IGNORED";
 
-  db.prepare(
+  // uq_sms_provider_trxid makes a replayed forward a no-op instead of a second
+  // credit — the forwarder app retries aggressively on flaky mobile data.
+  const inserted = await run(
     `INSERT INTO incoming_sms
-      (id, receiving_account_id, raw_text, sent_at, provider, parse_status,
-       parsed_trx_id, parsed_amount_bdt, parsed_sender_msisdn)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    smsId,
-    account.id,
-    text,
-    sentAt ?? null,
-    account.provider,
-    parseStatus,
-    result.trxId ?? null,
-    result.amountBdt ?? null,
-    result.senderMsisdn ?? null
+       (id, receiving_account_id, raw_text, sent_at, provider, parse_status,
+        parsed_trx_id, parsed_amount_bdt, parsed_sender_msisdn)
+     VALUES ($1, $2, $3, $4, $5::provider_kind, $6::sms_parse_status, $7, $8, $9)
+     ON CONFLICT DO NOTHING`,
+    [
+      smsId,
+      account.id,
+      text,
+      sentAt ?? null,
+      account.provider,
+      parseStatus,
+      result.trxId ?? null,
+      result.amountBdt ?? null,
+      result.senderMsisdn ?? null,
+    ]
   );
+
+  if (inserted === 0) {
+    return NextResponse.json({ ok: true, duplicate: true, parseStatus });
+  }
 
   let matchedOrderId: string | null = null;
   if (parseStatus === "PARSED") {
-    const matchResult = tryMatchSmsToOrder(smsId);
+    const matchResult = await tryMatchSmsToOrder(smsId);
     matchedOrderId = matchResult.matchedOrderId;
   }
 

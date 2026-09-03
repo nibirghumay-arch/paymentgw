@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDb } from "@/lib/db";
+import { one, run, sql } from "@/lib/db";
 import { newId } from "@/lib/auth";
 import { requireAdmin } from "@/lib/require-admin";
 import { randomBytes } from "node:crypto";
@@ -10,13 +10,18 @@ import { randomBytes } from "node:crypto";
 // POST /api/admin/receiving-accounts   -> create new (admin sets owner's number)
 // ============================================================
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   if (!requireAdmin(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const db = getDb();
-  const accounts = db
-    .prepare(`SELECT * FROM receiving_accounts ORDER BY created_at DESC`)
-    .all();
+  const accounts = await sql(
+    `SELECT id, provider::text AS provider, msisdn, label, device_key,
+            is_active, created_at, updated_at
+       FROM receiving_accounts
+      ORDER BY created_at DESC`
+  );
 
   return NextResponse.json({ accounts });
 }
@@ -45,16 +50,21 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const db = getDb();
   const id = newId();
   const deviceKey = "dev_" + randomBytes(20).toString("hex");
 
-  db.prepare(
+  await run(
     `INSERT INTO receiving_accounts (id, provider, msisdn, label, device_key)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(id, parsed.data.provider, parsed.data.msisdn, parsed.data.label ?? null, deviceKey);
+     VALUES ($1, $2::provider_kind, $3, $4, $5)`,
+    [id, parsed.data.provider, parsed.data.msisdn, parsed.data.label ?? null, deviceKey]
+  );
 
-  const account = db.prepare(`SELECT * FROM receiving_accounts WHERE id = ?`).get(id);
+  const account = await one(
+    `SELECT id, provider::text AS provider, msisdn, label, device_key,
+            is_active, created_at, updated_at
+       FROM receiving_accounts WHERE id = $1`,
+    [id]
+  );
 
   return NextResponse.json({ account }, { status: 201 });
 }

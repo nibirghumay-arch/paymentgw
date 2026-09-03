@@ -12,7 +12,7 @@ interface Sms {
   parsed_trx_id: string | null;
   parsed_amount_bdt: number | null;
   receiving_msisdn: string;
-  is_used: number;
+  is_used: boolean;
 }
 
 const FILTERS = ["ALL", "PARSED", "UNPARSED", "IGNORED"];

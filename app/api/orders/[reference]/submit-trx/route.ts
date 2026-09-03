@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDb } from "@/lib/db";
+import { one } from "@/lib/db";
 import { submitTrxId } from "@/lib/matching";
 
 // ============================================================
@@ -9,6 +9,9 @@ import { submitTrxId } from "@/lib/matching";
 // sent money and typed in their TrxID. No auth needed (this is
 // the customer-facing step) but rate-limited-worthy in production.
 // ============================================================
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const schema = z.object({
   trxId: z
@@ -45,25 +48,29 @@ export async function POST(
     );
   }
 
-  const db = getDb();
-  const order = db.prepare(`SELECT * FROM orders WHERE reference = ?`).get(reference) as any;
+  const order = await one<{ id: string; status: string; expired: boolean }>(
+    `SELECT id, status::text AS status, (expires_at <= now()) AS expired
+       FROM orders WHERE reference = $1`,
+    [reference]
+  );
 
   if (!order) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
-  if (order.status === "EXPIRED") {
-    return NextResponse.json({ error: "This payment session has expired" }, { status: 410 });
-  }
   if (order.status === "APPROVED") {
     return NextResponse.json({ status: "APPROVED", message: "Already confirmed" });
   }
   if (order.status === "REJECTED") {
     return NextResponse.json({ error: "This order was rejected" }, { status: 409 });
   }
+  // Treat a past-deadline order as expired even if the sweep hasn't run yet.
+  if (order.status === "EXPIRED" || order.expired) {
+    return NextResponse.json({ error: "This payment session has expired" }, { status: 410 });
+  }
 
   try {
-    const result = submitTrxId(order.id, parsed.data.trxId, parsed.data.customerMsisdn);
+    const result = await submitTrxId(order.id, parsed.data.trxId, parsed.data.customerMsisdn);
     return NextResponse.json({
       status: result.status,
       message:

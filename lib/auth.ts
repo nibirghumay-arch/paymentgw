@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { randomBytes, randomUUID } from "node:crypto";
-import { getDb } from "./db";
+import { one } from "./db";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 if (!JWT_SECRET && process.env.NODE_ENV === "production") {
@@ -44,6 +44,11 @@ export function generateApiSecret(): string {
   return "sk_" + randomBytes(24).toString("hex");
 }
 
+/** Shared secret the merchant uses to verify our webhook HMAC. */
+export function generateWebhookSecret(): string {
+  return "whsec_" + randomBytes(32).toString("hex");
+}
+
 export async function hashApiSecret(secret: string): Promise<string> {
   return bcrypt.hash(secret, 10);
 }
@@ -52,6 +57,13 @@ export interface AuthedMerchant {
   id: string;
   name: string;
   webhookUrl: string | null;
+}
+
+interface MerchantRow {
+  id: string;
+  name: string;
+  api_secret_hash: string;
+  webhook_url: string | null;
 }
 
 /**
@@ -66,10 +78,12 @@ export async function authenticateMerchant(
   const [apiKey, apiSecret] = token.split(":");
   if (!apiKey || !apiSecret) return null;
 
-  const db = getDb();
-  const merchant = db
-    .prepare(`SELECT * FROM merchants WHERE api_key = ? AND is_active = 1`)
-    .get(apiKey) as any;
+  const merchant = await one<MerchantRow>(
+    `SELECT id, name, api_secret_hash, webhook_url
+       FROM merchants
+      WHERE api_key = $1 AND is_active = TRUE`,
+    [apiKey]
+  );
 
   if (!merchant) return null;
 

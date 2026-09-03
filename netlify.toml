@@ -1,0 +1,33 @@
+# ============================================================
+# BD Payment Gateway — Netlify site config
+#
+# Repo: https://github.com/nibirghumay-arch/paymentgw
+# In Netlify, set "Base directory" to:  bd-payment-gateway
+# (the Next.js app lives one level below the repo root)
+#
+# Required environment variables (Site configuration → Environment):
+#   DATABASE_URL      pooled Postgres URL (Neon / Supabase pooler)
+#   JWT_SECRET        openssl rand -hex 32
+#   CRON_SECRET       openssl rand -hex 32
+#   PUBLIC_BASE_URL   https://<your-site>.netlify.app
+# ============================================================
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # Next 16 + the Netlify adapter; keep the build lean.
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# Turns the Next.js app (App Router, route handlers, SSR) into Netlify
+# Functions + Edge. Required — without it only static files deploy.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Scheduled functions live here; expire-orders.mts declares its own
+# "*/5 * * * *" schedule in code via `export const config`.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"

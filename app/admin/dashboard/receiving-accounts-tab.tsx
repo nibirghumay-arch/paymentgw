@@ -9,7 +9,7 @@ interface Account {
   msisdn: string;
   label: string | null;
   device_key: string;
-  is_active: number;
+  is_active: boolean;
   created_at: string;
 }
 
@@ -71,7 +71,7 @@ export default function ReceivingAccountsTab() {
     await fetch(`/api/admin/receiving-accounts/${acc.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isActive: acc.is_active !== 1 }),
+      body: JSON.stringify({ isActive: !acc.is_active }),
     });
     await load();
   }

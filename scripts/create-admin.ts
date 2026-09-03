@@ -1,8 +1,8 @@
-// Usage: npx tsx scripts/create-admin.ts <email> <password> <name>
+// Usage: npx tsx scripts/create-admin.ts <email> <password> [name]
 // Creates (or updates the password of) an admin account. This is the only
 // way to create admins — there is deliberately no public signup route.
 
-import { getDb } from "../lib/db";
+import { getPool, one, run } from "../lib/db";
 import { hashPassword, newId } from "../lib/auth";
 
 async function main() {
@@ -18,29 +18,31 @@ async function main() {
     process.exit(1);
   }
 
-  const db = getDb();
   const passwordHash = await hashPassword(password);
-  const existing = db.prepare(`SELECT id FROM admins WHERE email = ?`).get(email.toLowerCase()) as any;
+  const existing = await one<{ id: string }>(`SELECT id FROM admins WHERE email = $1`, [
+    email.toLowerCase(),
+  ]);
 
   if (existing) {
-    db.prepare(`UPDATE admins SET password_hash = ?, name = ? WHERE id = ?`).run(
+    await run(`UPDATE admins SET password_hash = $2, name = $3 WHERE id = $1`, [
+      existing.id,
       passwordHash,
       name,
-      existing.id
-    );
+    ]);
     console.log(`Updated existing admin: ${email}`);
   } else {
-    db.prepare(`INSERT INTO admins (id, email, password_hash, name) VALUES (?, ?, ?, ?)`).run(
-      newId(),
-      email.toLowerCase(),
-      passwordHash,
-      name
+    await run(
+      `INSERT INTO admins (id, email, password_hash, name) VALUES ($1, $2, $3, $4)`,
+      [newId(), email.toLowerCase(), passwordHash, name]
     );
     console.log(`Created admin: ${email}`);
   }
+
+  await getPool().end();
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch(async (err) => {
+  console.error(err instanceof Error ? err.message : err);
+  await getPool().end().catch(() => {});
   process.exit(1);
 });

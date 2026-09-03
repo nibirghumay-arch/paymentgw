@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getDb } from "@/lib/db";
+import { one } from "@/lib/db";
 import { verifyPassword, signAdminToken } from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const schema = z.object({
   email: z.string().email(),
@@ -21,10 +24,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const db = getDb();
-  const admin = db
-    .prepare(`SELECT * FROM admins WHERE email = ?`)
-    .get(parsed.data.email.toLowerCase()) as any;
+  const admin = await one<{ id: string; email: string; password_hash: string; name: string }>(
+    `SELECT id, email, password_hash, name FROM admins WHERE email = $1`,
+    [parsed.data.email.toLowerCase()]
+  );
 
   // Constant-shape response whether or not the email exists, to avoid
   // leaking which admin emails are registered.
